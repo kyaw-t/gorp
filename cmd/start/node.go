@@ -1,8 +1,10 @@
 package start
 
 import (
+	"bytes"
 	"gorp/internals/config"
 	"io"
+	"io/ioutil"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -18,6 +20,14 @@ type NodePackage struct {
 type NodeHandler struct {
 	nodeConfig config.NodeConfig
 	logger     slog.Logger
+}
+
+type ProxyRequestListOptions struct {
+	urls   []string
+	r      *http.Request
+	w      http.ResponseWriter
+	h      *NodeHandler
+	logger slog.Logger
 }
 
 func parsePath(path string) (NodePackage, error) {
@@ -82,7 +92,7 @@ func findMapping(p NodePackage, nodeConfig config.NodeConfig) (string, error) {
 	return "", nil
 }
 
-func createProxtList(pkg NodePackage, path string, h *NodeHandler) ([]string, error) {
+func createProxyList(pkg NodePackage, path string, h *NodeHandler) ([]string, error) {
 	urls := []string{}
 	mapping, err := findMapping(pkg, h.nodeConfig)
 	if err != nil {
@@ -116,6 +126,12 @@ func proxyRequest(url *url.URL, r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
+	for key, values := range r.Header {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+
 	req.Host = url.Host
 	resp, err := client.Do(req)
 	if err != nil {
@@ -136,7 +152,38 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	w.Write(body)
 }
 
-func proxyRequestList(urls []string, r *http.Request, w http.ResponseWriter, logger slog.Logger) {
+type copyDryRunResponseOptions struct {
+	w       http.ResponseWriter
+	resp    *http.Response
+	target  string
+	replace string
+}
+
+func copyDryRunResponse(options copyDryRunResponseOptions) {
+	resp := options.resp
+	w := options.w
+	target := options.target
+	replace := options.replace
+
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	modifiedBody := strings.ReplaceAll(string(body), target, replace)
+	w.Write([]byte(modifiedBody))
+}
+
+func proxyRequestList(options ProxyRequestListOptions) {
+
+	urls := options.urls
+	r := options.r
+	w := options.w
+	logger := options.logger
+	h := options.h
+
 	for idx, u := range urls {
 		url, err := url.Parse(u)
 		if err != nil {
@@ -153,6 +200,17 @@ func proxyRequestList(urls []string, r *http.Request, w http.ResponseWriter, log
 
 		// If the repsonse is successful, we can return it
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+
+			if h.nodeConfig.DryRun {
+				logger.Info("Overriding tarball urls for dry run ")
+				copyDryRunResponse(copyDryRunResponseOptions{
+					w:       w,
+					resp:    resp,
+					target:  url.String(),
+					replace: "http://localhost:3224",
+				})
+			}
+
 			copyResponse(w, resp)
 			resp.Body.Close()
 			logger.Info("Successfully proxied request",
@@ -185,6 +243,21 @@ func proxyRequestList(urls []string, r *http.Request, w http.ResponseWriter, log
 func (h *NodeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := h.logger
 
+	if strings.Contains(r.URL.Path, ".tgz") && h.nodeConfig.DryRun {
+		logger.Info("Received dry run request for tarball", "path", r.URL.Path)
+		dummyTarball := []byte("This is a dummy tarball")
+		dryRunResponse := &http.Response{
+			StatusCode:    200,
+			Header:        make(http.Header),
+			ContentLength: int64(len(dummyTarball)),
+			Body:          ioutil.NopCloser(bytes.NewReader(dummyTarball)),
+		}
+
+		dryRunResponse.Header.Set("Content-Type", "application/octet-stream")
+		copyResponse(w, dryRunResponse)
+		return
+	}
+
 	nodePackge, err := parsePath(r.URL.Path)
 	if err != nil {
 		logger.Info("Received unexpected package format", "package", r.URL.Path)
@@ -192,11 +265,18 @@ func (h *NodeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	logger.Info("Received request", "scope", nodePackge.scope, "name", nodePackge.name, "path", r.URL.Path)
-	urls, err := createProxtList(nodePackge, r.URL.Path, h)
+	urls, err := createProxyList(nodePackge, r.URL.Path, h)
 	if err != nil {
 		logger.Info("Failed to create proxy list")
 		http.Error(w, "Failed to create proxy list", http.StatusInternalServerError)
 	}
 
-	proxyRequestList(urls, r, w, logger)
+	options := ProxyRequestListOptions{
+		urls:   urls,
+		r:      r,
+		w:      w,
+		h:      h,
+		logger: logger,
+	}
+	proxyRequestList(options)
 }

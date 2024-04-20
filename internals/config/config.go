@@ -16,6 +16,7 @@ type NodeConfig struct {
 	Registry               string            `json:"registry"`
 	Fallback               []string          `json:"fallback"`
 	UseFallbackForMappings bool              `json:"useFallbackForMappings"`
+	DryRun                 bool              `json:"dryRun"`
 	Mappings               map[string]string `json:"mappings"`
 }
 
