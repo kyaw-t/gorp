@@ -1,0 +1,20 @@
+{
+  "server": {
+    "port": 3000
+  },
+  "node": {
+    "registry": "http://npmjs.org/",
+    "fallbacks": [
+      "http://npmjs.org/", 
+      "http://registry.npmjs.org/"
+    ],
+    "useFallbackForMappings" : true,
+    "mappings": {
+      "@exapmle/*"  : "http://localhost:3000",
+      "*/example"  : "http://localhost:3000",
+      "example-*"  : "http://localhost:3000",
+      "*example"  : "http://localhost:3000",
+      "example"  : "http://localhost:3000"
+    }
+  }
+}
